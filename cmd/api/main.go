@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	_ "github.com/lib/pq"
 	"golangHW.darkhanomirbay/internal/data"
 	"log"
 	"net/http"
@@ -33,7 +34,7 @@ type application struct {
 func main() {
 	var cfg config
 
-	flag.IntVar(&cfg.port, "port", 4000, "API server port")
+	flag.IntVar(&cfg.port, "port", 5000, "API server port")
 	flag.StringVar(&cfg.env, "env", "development", "Environment (development|staging|production)")
 
 	flag.StringVar(&cfg.db.dsn, "db-dsn", "postgres://postgres:703905@localhost/d.omirbayDB?sslmode=disable", "PostgreSQL DSN")
