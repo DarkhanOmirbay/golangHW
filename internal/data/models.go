@@ -11,9 +11,18 @@ var (
 )
 
 type Models struct {
-	ModuleInfoModel ModuleInfoModel
+	ModuleInfoModel     ModuleInfoModel
+	DepartmentInfoModel DepartmentInfoModel
+	UserInfoModel       UserInfoModel
+	Permissions         PermissionModel // Add a new Permissions field.
+	Tokens              TokenModel
 }
 
 func NewModels(db *sql.DB) Models {
-	return Models{ModuleInfoModel: ModuleInfoModel{DB: db}}
+	return Models{ModuleInfoModel: ModuleInfoModel{DB: db},
+		DepartmentInfoModel: DepartmentInfoModel{DB: db},
+		UserInfoModel:       UserInfoModel{DB: db},
+		Permissions:         PermissionModel{DB: db},
+		Tokens:              TokenModel{DB: db},
+	}
 }

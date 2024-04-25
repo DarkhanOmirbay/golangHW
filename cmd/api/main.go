@@ -4,12 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"flag"
-	"fmt"
 	_ "github.com/lib/pq"
 	"golangHW.darkhanomirbay/internal/data"
-	"log"
-	"net/http"
+	"golangHW.darkhanomirbay/internal/jsonlog"
+	"golangHW.darkhanomirbay/internal/mailer"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -24,11 +24,25 @@ type config struct {
 		maxIdleConns int
 		maxIdleTime  string
 	}
+	limiter struct {
+		rps     float64
+		burst   int
+		enabled bool
+	}
+	smtp struct {
+		host     string
+		port     int
+		username string
+		password string
+		sender   string
+	}
 }
 type application struct {
 	config config
-	logger *log.Logger
+	logger *jsonlog.Logger
 	models data.Models
+	mailer mailer.Mailer
+	wg     sync.WaitGroup
 }
 
 func main() {
@@ -42,30 +56,38 @@ func main() {
 	flag.IntVar(&cfg.db.maxOpenConns, "max-open-conns", 25, "PostgreSQL max open connections")
 	flag.IntVar(&cfg.db.maxIdleConns, "max-idle-conns", 25, "PostgreSQL max idle connections")
 	flag.StringVar(&cfg.db.maxIdleTime, "max-idle-time", "15m", "PostgreSQL max connection idle time")
+	flag.Float64Var(&cfg.limiter.rps, "limiter-rps", 2, "Rate limiter maximum requests per second")
+	flag.IntVar(&cfg.limiter.burst, "limiter-burst", 4, "Rate limiter maximum burst")
+	flag.BoolVar(&cfg.limiter.enabled, "limiter-enabled", true, "Enable rate limiter")
+
+	flag.StringVar(&cfg.smtp.host, "smtp-host", "sandbox.smtp.mailtrap.io", "SMTP host")
+	flag.IntVar(&cfg.smtp.port, "smtp-port", 25, "SMTP port")
+	flag.StringVar(&cfg.smtp.username, "smtp-username", "29e20c93d498ff", "SMTP username")
+	flag.StringVar(&cfg.smtp.password, "smtp-password", "4672af6936d913", "SMTP password")
+	flag.StringVar(&cfg.smtp.sender, "smtp-sender", "<220373@astanait.edu.kz> ", "SMTP sender")
 	flag.Parse()
 
-	logger := log.New(os.Stdout, "", log.Ldate|log.Ltime)
+	logger := jsonlog.New(os.Stdout, jsonlog.LevelInfo)
 	db, err := openDB(cfg)
 	if err != nil {
-		logger.Fatal(err)
+		logger.PrintFatal(err, nil)
 	}
 	defer db.Close()
-	logger.Printf("database connection pool established")
+	logger.PrintInfo("database connection pool established", nil)
 	app := &application{
 		config: cfg,
 		logger: logger,
 		models: data.NewModels(db),
+		mailer: mailer.New(cfg.smtp.host, cfg.smtp.port, cfg.smtp.username, cfg.smtp.password, cfg.smtp.sender),
 	}
-	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.port),
-		Handler:      app.routes(),
-		IdleTimeout:  time.Minute,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
+
+	app.gorout()
+
+	err = app.serve()
+	if err != nil {
+		app.logger.PrintFatal(err, nil)
 	}
-	logger.Printf("starting %s server on %s", cfg.env, cfg.env)
-	err = srv.ListenAndServe()
-	logger.Fatal(err)
+
 }
 func openDB(cfg config) (*sql.DB, error) {
 	db, err := sql.Open("postgres", cfg.db.dsn)
@@ -89,4 +111,42 @@ func openDB(cfg config) (*sql.DB, error) {
 		return nil, err
 	}
 	return db, nil
+}
+
+func (app *application) gorout() {
+	for {
+		//var filters data.Filters
+		//users, _, err := app.models.UserInfoModel.GetAllNonActivated("", " ", filters)
+		users, err := app.models.UserInfoModel.GetAllNoActiv()
+		if err != nil {
+			app.logger.PrintError(err, nil)
+
+		}
+
+		for _, user := range users {
+			err := app.models.Tokens.DeleteAllForUser(data.ScopeActivation, user.ID)
+			if err != nil {
+				app.logger.PrintError(err, nil)
+			}
+			token, err := app.models.Tokens.New(user.ID, 2*time.Minute, data.ScopeActivation)
+			if err != nil {
+				app.logger.PrintError(err, nil)
+				return
+			}
+			go func() {
+				// As there are now multiple pieces of data that we want to pass to our email
+				// templates, we create a map to act as a 'holding structure' for the data. This
+				// contains the plaintext version of the activation token for the user, along
+				// with their ID.
+				data := map[string]any{
+					"activationToken": token.Plaintext,
+					"userID":          user.ID,
+				}
+				err = app.mailer.Send(user.Email, "user_welcome.tmpl", data)
+				if err != nil {
+					app.logger.PrintError(err, nil)
+				}
+			}()
+		}
+	}
 }
